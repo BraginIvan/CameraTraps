@@ -283,6 +283,83 @@ class TFDetector:
         return result
 
 
+    def _generate_detections_batch_images(self, images):
+
+        images=np.stack([np.asarray(im, np.uint8) for im in images])
+        np_im = np.asarray(images[0], np.uint8)
+        im_w_batch_dim = np.expand_dims(np_im, axis=0)
+
+        # need to change the above line to the following if supporting a batch size > 1 and resizing to the same size
+        # np_images = [np.asarray(image, np.uint8) for image in images]
+        # images_stacked = np.stack(np_images, axis=0) if len(images) > 1 else np.expand_dims(np_images[0], axis=0)
+
+        # performs inference
+        (box_tensor_out, score_tensor_out, class_tensor_out) = self.tf_session.run(
+            [self.box_tensor, self.score_tensor, self.class_tensor],
+            feed_dict={self.image_tensor: images})
+
+        return box_tensor_out, score_tensor_out, class_tensor_out
+
+    def generate_detections_batch_images(self, images, image_ids,
+                                      detection_threshold=DEFAULT_OUTPUT_CONFIDENCE_THRESHOLD):
+        """Apply the detector to an image.
+
+        Args:
+            image: the PIL Image object
+            image_id: a path to identify the image; will be in the "file" field of the output object
+            detection_threshold: confidence above which to include the detection proposal
+
+        Returns:
+        A dict with the following fields, see the 'images' key in https://github.com/microsoft/CameraTraps/tree/master/api/batch_processing#batch-processing-api-output-format
+            - 'file' (always present)
+            - 'max_detection_conf'
+            - 'detections', which is a list of detection objects containing keys 'category', 'conf' and 'bbox'
+            - 'failure'
+        """
+
+        try:
+            b_box, b_score, b_class = self._generate_detections_batch_images(images)
+            # b_box=np.pzeros((8, 100, 4))
+            # b_score = np.zeros((8, 100))
+            # b_class = n.zeros((8, 100))
+
+            # our batch size is 1; need to loop the batch dim if supporting batch size > 1
+            result =[]
+            for img_id in range(len(images)):
+                r = {
+                    'file': image_ids[img_id],
+                }
+                boxes, scores, classes = b_box[img_id], b_score[img_id], b_class[img_id]
+
+                detections_cur_image = []  # will be empty for an image with no confident detections
+                max_detection_conf = 0.0
+                for b, s, c in zip(boxes, scores, classes):
+                    if s > detection_threshold:
+                        detection_entry = {
+                            'category': str(int(c)),  # use string type for the numerical class label, not int
+                            'conf': truncate_float(float(s),  # cast to float for json serialization
+                                                   precision=TFDetector.CONF_DIGITS),
+                            'bbox': TFDetector.__convert_coords(b)
+                        }
+                        detections_cur_image.append(detection_entry)
+                        if s > max_detection_conf:
+                            max_detection_conf = s
+
+
+                r['max_detection_conf'] = truncate_float(float(max_detection_conf),
+                                                              precision=TFDetector.CONF_DIGITS)
+                r['detections'] = detections_cur_image
+                result.append(r)
+
+        except Exception as e:
+            result = [{
+                'file': image_id,
+                'failure': TFDetector.FAILURE_TF_INFER
+            } for image_id in image_ids]
+            print('TFDetector: image {} failed during inference: {}'.format(image_ids[0], str(e)))
+
+        return result
+
 #%% Main function
 
 def load_and_run_detector(model_file, image_file_names, output_dir,

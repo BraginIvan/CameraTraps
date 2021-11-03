@@ -85,9 +85,7 @@ def process_images(im_files, tf_detector, confidence_threshold):
         elapsed = time.time() - start_time
         print('Loaded model (batch level) in {}'.format(humanfriendly.format_timespan(elapsed)))
 
-    results = []
-    for im_file in im_files:
-        results.append(process_image(im_file, tf_detector, confidence_threshold))
+    results = _process_images(im_files, tf_detector, confidence_threshold)
     return results
 
 
@@ -128,6 +126,42 @@ def process_image(im_file, tf_detector, confidence_threshold):
     return result
 
 
+def _process_images(im_files, tf_detector, confidence_threshold):
+    """Runs the MegaDetector over a single image file.
+
+    Args
+    - im_file: str, path to image file
+    - tf_detector: TFDetector, loaded model
+    - confidence_threshold: float, only detections above this threshold are returned
+
+    Returns:
+    - result: dict representing detections on one image
+        see the 'images' key in https://github.com/microsoft/CameraTraps/tree/master/api/batch_processing#batch-processing-api-output-format
+    """
+
+    try:
+        images = [viz_utils.load_image(im_file) for im_file in im_files]
+    except Exception as e:
+        print('Images {} cannot be loaded. Exception: {}'.format(im_files[0], e))
+        result = [{
+            'file': im_file,
+            'failure': TFDetector.FAILURE_IMAGE_OPEN
+        } for im_file in im_files]
+        return result
+
+    try:
+        result = tf_detector.generate_detections_batch_images(
+            images, im_files, detection_threshold=confidence_threshold)
+    except Exception as e:
+        print('Image {} cannot be processed. Exception: {}'.format(im_files[0], e))
+        result = [{
+            'file': im_file,
+            'failure': TFDetector.FAILURE_TF_INFER
+        }for im_file in im_files]
+        return result
+
+    return result
+
 def chunks_by_number_of_chunks(ls, n):
     """Splits a list into n even chunks.
 
@@ -141,7 +175,7 @@ def chunks_by_number_of_chunks(ls, n):
 
 #%% Main function
 
-def load_and_run_detector_batch(model_file, image_file_names, checkpoint_path=None,
+def load_and_run_detector_batch(model_file, image_file_names, batch_size, checkpoint_path=None,
                                 confidence_threshold=0, checkpoint_frequency=-1,
                                 results=None, n_cores=0):
     """
@@ -176,7 +210,7 @@ def load_and_run_detector_batch(model_file, image_file_names, checkpoint_path=No
 
         # Does not count those already processed
         count = 0
-
+        batch_images = []
         for im_file in tqdm(image_file_names):
 
             # Will not add additional entries not in the starter checkpoint
@@ -185,9 +219,12 @@ def load_and_run_detector_batch(model_file, image_file_names, checkpoint_path=No
                 continue
 
             count += 1
+            batch_images.append(im_file)
 
-            result = process_image(im_file, tf_detector, confidence_threshold)
-            results.append(result)
+            if len(batch_images) == batch_size:
+                batch_results = process_images(batch_images, tf_detector, confidence_threshold)
+                results.extend(batch_results)
+                batch_images = []
 
             # checkpoint
             if checkpoint_frequency != -1 and count % checkpoint_frequency == 0:
@@ -249,9 +286,14 @@ def write_results_to_file(results, output_file, relative_path_base=None):
 #%% Command-line driver
 
 def main():
-    
+
     parser = argparse.ArgumentParser(
         description='Module to run a TF animal detection model on lots of images')
+    parser.add_argument(
+        '--batch_size',
+        type=int,
+        default=8,
+        help='inference batch_size')
     parser.add_argument(
         'detector_file',
         help='Path to .pb TensorFlow detector model file')
@@ -344,7 +386,7 @@ def main():
 
     if len(output_dir) > 0:
         os.makedirs(output_dir,exist_ok=True)
-        
+
     assert not os.path.isdir(args.output_file), 'Specified output file is a directory'
 
     # Test that we can write to the output_file's dir if checkpointing requested
@@ -360,6 +402,7 @@ def main():
 
     results = load_and_run_detector_batch(model_file=args.detector_file,
                                           image_file_names=image_file_names,
+                                          batch_size=args.batch_size,
                                           checkpoint_path=checkpoint_path,
                                           confidence_threshold=args.threshold,
                                           checkpoint_frequency=args.checkpoint_frequency,
