@@ -295,6 +295,11 @@ def main():
         default=8,
         help='inference batch_size')
     parser.add_argument(
+        '--take_each',
+        type=int,
+        default=10,
+        help='freq of images')
+    parser.add_argument(
         'detector_file',
         help='Path to .pb TensorFlow detector model file')
     parser.add_argument(
@@ -365,6 +370,7 @@ def main():
     # Find the images to score; images can be a directory, may need to recurse
     if os.path.isdir(args.image_file):
         image_file_names = ImagePathUtils.find_images(args.image_file, args.recursive)
+        image_file_names=[n for n in image_file_names if int(n.split("/")[-1].split(".")[0])%args.take_each==0]
         print('{} image files found in the input directory'.format(len(image_file_names)))
     # A json list of image paths
     elif os.path.isfile(args.image_file) and args.image_file.endswith('.json'):
